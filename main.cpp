@@ -63,7 +63,7 @@ void updateParticles()
 {
     for(int i=0; i<NUM_PARTICLES; i++)
     {
-        for(int n=0; n<200; n++){}
+        for(int n=0; n<200; n++){} // Padding work to compare GPU and CPU
 
         if( h_data->spawnTime[i] + h_data->lifespan[i] < elapsedTime )
         {

@@ -22,7 +22,7 @@ __global__ void kernel(float3* pos, VertexData* data, int n, int now)
 {
     int i = (blockIdx.x * blockDim.x) + threadIdx.x;
     
-    for(int n=0; n < 200; n++){}
+    for(int n=0; n < 200; n++){} // Padding work to compare GPU and CPU
 
     float3 p = pos[i];
     
