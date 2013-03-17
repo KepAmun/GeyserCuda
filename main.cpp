@@ -1,16 +1,16 @@
 
 #include <stdio.h>
-#include <iostream>
+#include <stdlib.h>
 #include <time.h>
 #include <math.h>
 
 #include <GL/glew.h>
 #include <GL/glut.h>
+#include <windows.h>
 
 #include <cuda_runtime_api.h>
 #include <cuda_gl_interop.h>
 #include <curand.h>
-#include <vector_types.h>
 
 #include "VertexData.h"
 
@@ -19,7 +19,7 @@
 
 extern "C" void init_curand(curandState* state, unsigned long long seed);
 
-extern "C" void launch_kernel(float3* pos, VertexData* data, int n, int time);
+extern "C" void launch_kernel(float3* pos, VertexData* data, int n, int now, int timeDelta);
 
 
 // vbo variables
@@ -32,6 +32,8 @@ float3 pos[NUM_PARTICLES];
 
 int elapsedTime = 0;
 int lastTime = 0;
+int numFrames = 0.0;
+int lastFpsReset = 0;
 
 int mouse_old_x, mouse_old_y;
 int mouse_buttons = 0;
@@ -41,7 +43,9 @@ float translate_z = -3.0;
 VertexData * h_data;
 VertexData* d_data;
 
-void runCuda(struct cudaGraphicsResource **vbo_resource, VertexData* data)
+
+// Update particle positions on GPU 
+void runCuda(struct cudaGraphicsResource **vbo_resource, VertexData* data, int now, int timeDelta)
 {
     // map OpenGL buffer object for writing from CUDA
     float3 *dptr;
@@ -52,20 +56,20 @@ void runCuda(struct cudaGraphicsResource **vbo_resource, VertexData* data)
     //printf("CUDA mapped VBO: May access %ld bytes\n", num_bytes);
     
 
-    launch_kernel(dptr, data, NUM_PARTICLES, elapsedTime);
+    launch_kernel(dptr, data, NUM_PARTICLES, now, timeDelta);
     
 
     // unmap buffer object
     cudaGraphicsUnmapResources(1, vbo_resource, 0);
 }
 
-void updateParticles()
+// Update particle positions on CPU
+void updateParticles(VertexData* data, int now, int timeDelta)
 {
     for(int i=0; i<NUM_PARTICLES; i++)
     {
-        for(int n=0; n<200; n++){} // Padding work to compare GPU and CPU
 
-        if( h_data->spawnTime[i] + h_data->lifespan[i] < elapsedTime )
+        if( data->spawnTime[i] + data->lifespan[i] < now )
         {
             pos[i].x = 0;
             pos[i].y = 0;
@@ -73,35 +77,35 @@ void updateParticles()
         
             float3 velocity;
 
-            curandState localState = h_data->randState[i];
+            curandState localState = data->randState[i];
         
-            float dTheta = h_data->dTheta * (rand()/(float)RAND_MAX);
-            float dPhi = h_data->dPhi * (rand()/(float)RAND_MAX);
+            float dTheta = data->dTheta * (rand()/(float)RAND_MAX);
+            float dPhi = data->dPhi * (rand()/(float)RAND_MAX);
         
-            float speed = (rand()/(float)RAND_MAX) * h_data->speedRange + h_data->speedMin;
+            float speed = (rand()/(float)RAND_MAX) * data->speedRange + data->speedMin;
 
 
-            float theta = h_data->initTheta + dTheta;
-            float phi = h_data->initPhi + dPhi;
+            float theta = data->initTheta + dTheta;
+            float phi = data->initPhi + dPhi;
             velocity.x = sin(phi) * sin(theta) * speed;
             velocity.y = cos(phi) * speed;
             velocity.z = sin(phi) * cos(theta) * speed;
 
-            h_data->spawnTime[i] = elapsedTime;
-            h_data->lifespan[i] = (rand()/(float)RAND_MAX) * h_data->lifespanRange + h_data->lifespanMin;
+            data->spawnTime[i] = elapsedTime;
+            data->lifespan[i] = (rand()/(float)RAND_MAX) * data->lifespanRange + data->lifespanMin;
 
-            h_data->randState[i] = localState;
+            data->randState[i] = localState;
 
-            h_data->velocity[i] = velocity;
+            data->velocity[i] = velocity;
         }
         
-        h_data->velocity[i].x += h_data->acceleration.x;
-        h_data->velocity[i].y += h_data->acceleration.y;
-        h_data->velocity[i].z += h_data->acceleration.z;
+        data->velocity[i].x += data->acceleration.x * timeDelta;
+        data->velocity[i].y += data->acceleration.y * timeDelta;
+        data->velocity[i].z += data->acceleration.z * timeDelta;
 
-        pos[i].x += h_data->velocity[i].x;
-        pos[i].y += h_data->velocity[i].y;
-        pos[i].z += h_data->velocity[i].z;
+        pos[i].x += data->velocity[i].x * timeDelta;
+        pos[i].y += data->velocity[i].y * timeDelta;
+        pos[i].z += data->velocity[i].z * timeDelta;
     }
 }
 
@@ -109,12 +113,29 @@ void updateParticles()
 void timerEvent(int value)
 {
     glutPostRedisplay();
-	glutTimerFunc(34, timerEvent,0);
+	glutTimerFunc(1, timerEvent, 0); // Ask for 1000 frames per second.
 }
 
 
 void display()
 {
+    elapsedTime = glutGet(GLUT_ELAPSED_TIME);
+    int timeDelta = elapsedTime-lastTime;
+
+    numFrames++;
+
+    // Update current frames per second only once each second
+    if(lastTime/1000 < elapsedTime/1000)
+    {
+        printf("%f\n", numFrames/((elapsedTime-lastFpsReset)/1000.0f));
+        numFrames = 0;
+        lastFpsReset = elapsedTime;
+    }
+
+    lastTime = elapsedTime;
+
+
+    // Init display and view angle
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     
     glMatrixMode(GL_MODELVIEW);
@@ -124,17 +145,11 @@ void display()
     glRotatef(rotate_y, 0.0, 1.0, 0.0);
 
     
-    elapsedTime = glutGet(GLUT_ELAPSED_TIME);
-    int delta = elapsedTime-lastTime;
-    lastTime = elapsedTime;
-
-    printf("%f\n",1000.0f/delta);
-    
-    glColor3f(0.6, 0.80, 0.96);
+    glColor3f(0.6, 0.80, 0.96); // Set color to light blue for particles
 
     if(USE_GPU)
     {
-        runCuda(&cuda_vbo_resource, d_data);
+        runCuda(&cuda_vbo_resource, d_data, elapsedTime, timeDelta);
 
         // render from the vbo
         glBindBuffer(GL_ARRAY_BUFFER, vbo);
@@ -146,7 +161,7 @@ void display()
     }
     else
     {
-        updateParticles();
+        updateParticles(h_data, elapsedTime, timeDelta);
 
         glBegin(GL_POINTS);
         {
@@ -158,31 +173,47 @@ void display()
         glEnd();
     }
     
+
+    // Render framing box
     glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+    
+    glColor3f(0.8,0.8,0.8);
 
-    glBegin(GL_QUADS);
+    // Top
+    glBegin(GL_LINE_LOOP);
     {
-        glColor3f(0.8,0.8,0.8);
-        
         glVertex3f(1,1,1);
         glVertex3f(1,1,-1);
         glVertex3f(-1,1,-1);
         glVertex3f(-1,1,1);
-        
+    }
+    glEnd();
+
+    // Bottom
+    glBegin(GL_LINE_LOOP);
+    {   
         glVertex3f(1,-1,1);
         glVertex3f(1,-1,-1);
         glVertex3f(-1,-1,-1);
         glVertex3f(-1,-1,1);
-
+    }
+    glEnd();
+    
+    // Sides
+    glBegin(GL_LINES);
+    {
         glVertex3f(1,1,1);
+        glVertex3f(1,-1,1);
+        
         glVertex3f(1,1,-1);
         glVertex3f(1,-1,-1);
-        glVertex3f(1,-1,1);
 
-        glVertex3f(-1,-1,-1);
-        glVertex3f(-1,-1,1);
         glVertex3f(-1,1,1);
+        glVertex3f(-1,-1,1);
+
         glVertex3f(-1,1,-1);
+        glVertex3f(-1,-1,-1);
+
     }
     glEnd();
 
@@ -255,6 +286,22 @@ void motion(int x, int y)
     mouse_old_y = y;
 }
 
+void setVSync(bool sync)
+{	
+	// Function pointer for the wgl extention function we need to enable/disable vsync
+	typedef BOOL (APIENTRY *PFNWGLSWAPINTERVALPROC)( int );
+	PFNWGLSWAPINTERVALPROC wglSwapIntervalEXT = 0;
+
+	const char *extensions = (char*)glGetString( GL_EXTENSIONS );
+
+	if( strstr( extensions, "WGL_EXT_swap_control" ) != 0 )
+	{
+		wglSwapIntervalEXT = (PFNWGLSWAPINTERVALPROC)wglGetProcAddress( "wglSwapIntervalEXT" );
+
+		if( wglSwapIntervalEXT )
+			wglSwapIntervalEXT(sync);
+	}
+}
 
 bool initGL(int argc, char** argv)
 {
@@ -270,8 +317,8 @@ bool initGL(int argc, char** argv)
 	glutKeyboardFunc(keyboard);
 	glutMouseFunc(mouse);
 	glutMotionFunc(motion);
-
-	glutTimerFunc(34, timerEvent,0);
+    
+	glutTimerFunc(1, timerEvent,0); // Ask for 1000 frames per second.
 
     // default initialization
     glClearColor(0.1, 0.1, 0.1, 1.0);
@@ -284,7 +331,10 @@ bool initGL(int argc, char** argv)
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
     gluPerspective(60.0, (GLfloat)window_width / (GLfloat) window_height, 1.0, 1000.0);
+
+    setVSync(0);
     
+
     glewInit();
 
     return true;
@@ -308,35 +358,35 @@ int main(int argc, char** argv)
 
     const float PI = 2 * acos(0.0f);
     h_data->PI = PI;
-    const float PI_180 = PI/180;
+    const float D_to_R = PI/180; // Degrees to Radians
     
     h_data->acceleration.x = 0;
-    h_data->acceleration.y = -0.0008f;
+    h_data->acceleration.y = -0.000002f;
     h_data->acceleration.z = 0;
     
-    h_data->initTheta = 45 * PI_180;
-    h_data->initPhi = 15 * PI_180;
-
-    h_data->dTheta = 30 * PI_180;
-    h_data->dPhi = 5 * PI_180;
-
-    h_data->spread = 20 * PI_180;
+    h_data->speedMin = 0.002f;
+    h_data->speedRange = 0.00025f;
     
-    h_data->speedMin = 0.04f;
-    h_data->speedRange = 0.005f;
+    h_data->initTheta = 45 * D_to_R;
+    h_data->initPhi = 15 * D_to_R;
+
+    h_data->dTheta = 30 * D_to_R;
+    h_data->dPhi = 5 * D_to_R;
+
+    h_data->spread = 20 * D_to_R;
     
     h_data->lifespanMin = 2000;
     h_data->lifespanRange = 2000;
 
     
-    memset(h_data->spawnTime,-1,sizeof(int) * NUM_PARTICLES);
-    memset(h_data->lifespan,0,sizeof(int) * NUM_PARTICLES);
+    memset(h_data->spawnTime, -1, sizeof(int) * NUM_PARTICLES);
+    memset(h_data->lifespan, 0, sizeof(int) * NUM_PARTICLES);
 
     
     cudaMalloc((void**)&d_data, sizeof(VertexData));
     cudaMemcpy(d_data, h_data, sizeof(VertexData), cudaMemcpyHostToDevice);
 
-    init_curand(d_data->randState,time(NULL));
+    init_curand(d_data->randState, time(NULL));
 
     glutMainLoop();
 

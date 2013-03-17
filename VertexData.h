@@ -1,8 +1,9 @@
 
-#include <vector_types.h>
 #include <curand_kernel.h>
 
-#define NUM_PARTICLES (768*256)
+const int GRID_SIZE = 256;
+const int BLOCK_SIZE = 768;
+const int NUM_PARTICLES = GRID_SIZE * BLOCK_SIZE;
 
 struct VertexData
 {
@@ -12,7 +13,7 @@ struct VertexData
 
     float3 velocity[NUM_PARTICLES];
 
-    float speedMin;
+    float speedMin; // in units per millisecond
     float speedRange;
     
     float initTheta;
@@ -26,7 +27,8 @@ struct VertexData
     float lifespanMin;
     float lifespanRange;
     
-    int spawnTime[NUM_PARTICLES]; // in ms since app launch
-    int lifespan[NUM_PARTICLES]; // in ms
+    int spawnTime[NUM_PARTICLES]; // in milliseconds since app launch
+    int lifespan[NUM_PARTICLES]; // in milliseconds
+
     curandState randState[NUM_PARTICLES];
 };
